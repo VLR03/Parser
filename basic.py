@@ -99,6 +99,7 @@ TT_PLUS = 'PLUS'
 TT_MINUS = 'MINUS'
 TT_MUL = 'MUL'
 TT_DIV = 'DIV'
+TT_POW = 'POW'
 TT_LPAREN = 'LPAREN'
 TT_RPAREN = 'RPAREN'
 TT_EOF = 'EOF'
@@ -141,7 +142,7 @@ class Lexer:
     def make_tokens(self):
         tokens = []
 
-        while self.current_char != None:
+        while self.current_char is not None:
             if self.current_char in ' \t':
                 self.advance()
             elif self.current_char in DIGITS:
@@ -157,6 +158,9 @@ class Lexer:
                 self.advance()
             elif self.current_char == '/':
                 tokens.append(Token(TT_DIV, pos_start=self.pos))
+                self.advance()
+            elif self.current_char == '^':
+                tokens.append(Token(TT_POW, pos_start=self.pos))
                 self.advance()
             elif self.current_char == '(':
                 tokens.append(Token(TT_LPAREN, pos_start=self.pos))
@@ -285,17 +289,11 @@ class Parser:  # Acompanha pelo index o Token atual
 
     ###################################
 
-    def factor(self):
+    def atom(self):
         res = ParseResult()
         tok = self.current_tok  # Pega o token atual
 
-        if tok.type in (TT_PLUS, TT_MINUS):  # Verifica se o Token é um + ou um -
-            res.register(self.advance())
-            factor = res.register(self.factor())  # Pega o fator
-            if res.error: return res
-            return res.success(UnaryOpNode(tok, factor))
-
-        elif tok.type in (TT_INT, TT_FLOAT):  # Verifica se o Token é int ou float
+        if tok.type in (TT_INT, TT_FLOAT):  # Verifica se o Token é int ou float
             res.register(self.advance())
             return res.success(NumberNode(tok))
 
@@ -312,10 +310,25 @@ class Parser:  # Acompanha pelo index o Token atual
                     "Expected ')'"
                 ))
 
-        return res.failure(InvalidSyntaxError(  # Se não encontrar um int ou float retorna erro
+        return res.failure(InvalidSyntaxError(
             tok.pos_start, tok.pos_end,
-            "Expected int or float"
+            "Expected int, float, '+', '-', or '('"
         ))
+
+    def power(self):
+        return self.bin_op(self.atom, (TT_POW, ), self.factor)
+
+    def factor(self):
+        res = ParseResult()
+        tok = self.current_tok  # Pega o token atual
+
+        if tok.type in (TT_PLUS, TT_MINUS):  # Verifica se o Token é um + ou um -
+            res.register(self.advance())
+            factor = res.register(self.factor())  # Pega o fator
+            if res.error: return res
+            return res.success(UnaryOpNode(tok, factor))
+
+        return self.power()
 
     def term(self):
         return self.bin_op(self.factor, (TT_MUL, TT_DIV))
@@ -325,15 +338,17 @@ class Parser:  # Acompanha pelo index o Token atual
 
     ###################################
 
-    def bin_op(self, func, ops):
+    def bin_op(self, func_a, ops, func_b=None):
+        if func_b is None:
+            func_b = func_a
         res = ParseResult()
-        left = res.register(func())  # Pega o resultado da função e retorna só o node
+        left = res.register(func_a())  # Pega o resultado da função e retorna só o node
         if res.error: return res
 
         while self.current_tok.type in ops:  # Checa se o Token atual é uma multiplicação ou divisão
             op_tok = self.current_tok  # Pega o Token
             res.register(self.advance())
-            right = res.register(func())  # Pega o resultado da função e retorna só o node
+            right = res.register(func_b())  # Pega o resultado da função e retorna só o node
             if res.error: return res
             left = BinOpNode(left, op_tok, right)  # Cria uma operação binária entre os fatores
 
@@ -404,6 +419,10 @@ class Number:  # Armazena os números e fazer operações com eles
 
             return Number(self.value / other.value).set_context(self.context), None  # Realiza a operação
 
+    def powed_by(self, other):
+        if isinstance(other, Number):  # Checa se o valor é um número
+            return Number(self.value ** other.value).set_context(self.context), None  # Realiza a operação
+
     def __repr__(self):
         return str(self.value)
 
@@ -454,6 +473,8 @@ class Interpreter:
             result, error = left.multed_by(right)
         elif node.op_tok.type == TT_DIV:
             result, error = left.dived_by(right)
+        elif node.op_tok.type == TT_POW:
+            result, error = left.powed_by(right)
 
         if error:
             return res.failure(error)
