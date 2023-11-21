@@ -242,6 +242,23 @@ class NumberNode:  # pega o Token numérico correspondente (int ou float)
         return f'{self.tok}'
 
 
+class VarAccessNode:
+    def __init__(self, var_name_tok):
+        self.var_name_tok = var_name_tok
+
+        self.pos_start = self.var_name_tok.pos_start
+        self.pos_end = self.var_name_tok.pos_end
+
+
+class VarAssignNode:
+    def __init__(self, var_name_tok, value_node):
+        self.var_name_tok = var_name_tok
+        self.value_node = value_node
+
+        self.pos_start = self.var_name_tok.pos_start
+        self.pos_end = self.value_node.pos_end
+
+
 class BinOpNode:  # Pega os tokens dos operadores de +, -, *, /
     def __init__(self, left_node, op_tok, right_node):
         self.left_node = left_node
@@ -327,6 +344,10 @@ class Parser:  # Acompanha pelo index o Token atual
             res.register(self.advance())
             return res.success(NumberNode(tok))
 
+        elif tok.type == TT_IDENTIFIER:
+            res.register(self.advance())
+            return res.success(VarAccessNode(tok))
+
         elif tok.type == TT_LPAREN:  # Verifica se o Token é um "abre-parêntesis"
             res.register(self.advance())
             expr = res.register(self.expr())
@@ -346,7 +367,7 @@ class Parser:  # Acompanha pelo index o Token atual
         ))
 
     def power(self):
-        return self.bin_op(self.atom, (TT_POW, ), self.factor)
+        return self.bin_op(self.atom, (TT_POW,), self.factor)
 
     def factor(self):
         res = ParseResult()
@@ -491,6 +512,29 @@ class Context:
         self.display_name = display_name
         self.parent = parent
         self.parent_entry_pos = parent_entry_pos
+        self.symbol_table = None
+
+
+#######################################
+# SYMBOL TABLE
+#######################################
+
+class SymbolTable:
+    def __init__(self):  # Registra todos os nomes de variáveis e seus valores
+        self.symbols = {}
+        self.parent = None
+
+    def get(self, name):  # Pega o valor de uma variável
+        value = self.symbols.get(name, None)
+        if value is None and self.parent:  # Se o valor for None
+            return self.parent.get(name)  # Checa pelo valor na tabela de simbolos pai e o retorna
+        return value
+
+    def set(self, name, value):
+        self.symbols[name] = value
+
+    def remove(self, name):
+        del self.symbols[name]
 
 
 #######################################
@@ -512,6 +556,29 @@ class Interpreter:
         return RTResult().success(
             Number(node.tok.value).set_context(context).set_pos(node.pos_start, node.pos_end)
         )
+
+    def visit_VarAccessNode(self, node, context):
+        res = RTResult()
+        var_name = node.var_name_tok.value  # Pega o nome da variável
+        value = context.symbol_table.get(var_name)  # Pega o valor da variável
+
+        if not value:  # Se a variável ainda não foi definida
+            return res.failure(RTError(
+                node.pos_start, node.pos_end,
+                f"'{var_name}' is not defined",
+                context
+            ))
+
+        return res.success(value)
+
+    def visit_VarAssignNode(self, node, context):
+        res = RTResult()
+        var_name = node.var_name_tok.value
+        value = res.register(self.visit(node.value_node))
+        if res.error: return res
+
+        context.symbol_table.set(var_name, value)
+        return res.success(value)
 
     def visit_BinOpNode(self, node, context):
         res = RTResult()
