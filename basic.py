@@ -127,7 +127,7 @@ class Token:
             self.pos_end.advance()
 
         if pos_end:
-            self.pos_end = pos_end
+            self.pos_end = pos_end.copy()
 
     def matches(self, type_, value):
         return self.type == type_ and self.value == value
@@ -201,7 +201,7 @@ class Lexer:
         dot_count = 0
         pos_start = self.pos.copy()
 
-        while self.current_char != None and self.current_char in DIGITS + '.':
+        while self.current_char is not None and self.current_char in DIGITS + '.':
             if self.current_char == '.':
                 if dot_count == 1: break
                 dot_count += 1
@@ -292,20 +292,23 @@ class ParseResult:
     def __init__(self):
         self.error = None
         self.node = None
+        self.advance_count = 0
+
+    def register_advancement(self):
+        self.advance_count += 1  # Incrementa em um toda vez que a função avança
 
     def register(self, res):  # Verifica se o resultado é um erro e, se sim, retorna esse erro
-        if isinstance(res, ParseResult):
-            if res.error: self.error = res.error
-            return res.node
-
-        return res
+        self.advance_count += res.advance_count  # Registra quantas vezes a função já avançou
+        if res.error: self.error = res.error
+        return res.node
 
     def success(self, node):
         self.node = node
         return self
 
     def failure(self, error):
-        self.error = error
+        if not self.error or self.advance_count == 0:  # Checa se a função já avançou alguma vez
+            self.error = error
         return self
 
 
@@ -330,7 +333,7 @@ class Parser:  # Acompanha pelo index o Token atual
         if not res.error and self.current_tok.type != TT_EOF:
             return res.failure(InvalidSyntaxError(
                 self.current_tok.pos_start, self.current_tok.pos_end,
-                "Expected '+', '-', '*' or '/'"
+                "Expected '+', '-', '*', '/' or '^'"
             ))
         return res
 
@@ -341,19 +344,23 @@ class Parser:  # Acompanha pelo index o Token atual
         tok = self.current_tok  # Pega o token atual
 
         if tok.type in (TT_INT, TT_FLOAT):  # Verifica se o Token é int ou float
-            res.register(self.advance())
+            res.register_advancement()
+            self.advance()
             return res.success(NumberNode(tok))
 
         elif tok.type == TT_IDENTIFIER:
-            res.register(self.advance())
+            res.register_advancement()
+            self.advance()
             return res.success(VarAccessNode(tok))
 
         elif tok.type == TT_LPAREN:  # Verifica se o Token é um "abre-parêntesis"
-            res.register(self.advance())
+            res.register_advancement()
+            self.advance()
             expr = res.register(self.expr())
             if res.error: return res
             if self.current_tok.type == TT_RPAREN:  # Verifica se o Token é um "fecha-parêntesis"
-                res.register(self.advance())
+                res.register_advancement()
+                self.advance()
                 return res.success(expr)
             else:
                 return res.failure(InvalidSyntaxError(
@@ -363,7 +370,7 @@ class Parser:  # Acompanha pelo index o Token atual
 
         return res.failure(InvalidSyntaxError(
             tok.pos_start, tok.pos_end,
-            "Expected int, float, '+', '-', or '('"
+            "Expected int, float, identifier, '+', '-' or '('"
         ))
 
     def power(self):
@@ -374,7 +381,8 @@ class Parser:  # Acompanha pelo index o Token atual
         tok = self.current_tok  # Pega o token atual
 
         if tok.type in (TT_PLUS, TT_MINUS):  # Verifica se o Token é um + ou um -
-            res.register(self.advance())
+            res.register_advancement()
+            self.advance()
             factor = res.register(self.factor())  # Pega o fator
             if res.error: return res
             return res.success(UnaryOpNode(tok, factor))
@@ -388,7 +396,8 @@ class Parser:  # Acompanha pelo index o Token atual
         res = ParseResult()
 
         if self.current_tok.matches(TT_KEYWORD, 'VAR'):
-            res.register(self.advance())
+            res.register_advancement()
+            self.advance()
 
             if self.current_tok.type != TT_IDENTIFIER:
                 return res.failure(InvalidSyntaxError(
@@ -397,7 +406,8 @@ class Parser:  # Acompanha pelo index o Token atual
                 ))
 
             var_name = self.current_tok
-            res.register(self.advance())
+            res.register_advancement()
+            self.advance()
 
             if self.current_tok.type != TT_EQ:
                 return res.failure(InvalidSyntaxError(
@@ -405,12 +415,21 @@ class Parser:  # Acompanha pelo index o Token atual
                     "Expected '='"
                 ))
 
-            res.register(self.advance())
+            res.register_advancement()
+            self.advance()
             expr = res.register(self.expr())
             if res.error: return res
             return res.success(VarAssignNode(var_name, expr))
 
-        return self.bin_op(self.term, (TT_PLUS, TT_MINUS))
+        node = res.register(self.bin_op(self.term, (TT_PLUS, TT_MINUS)))
+
+        if res.error:
+            return res.failure(InvalidSyntaxError(
+                self.current_tok.pos_start, self.current_tok.pos_end,
+                "Expected 'VAR', int, float, identifier, '+', '-' or '('"
+            ))
+
+        return res.success(node)
 
     ###################################
 
@@ -423,7 +442,8 @@ class Parser:  # Acompanha pelo index o Token atual
 
         while self.current_tok.type in ops:  # Checa se o Token atual é uma multiplicação ou divisão
             op_tok = self.current_tok  # Pega o Token
-            res.register(self.advance())
+            res.register_advancement()
+            self.advance()
             right = res.register(func_b())  # Pega o resultado da função e retorna só o node
             if res.error: return res
             left = BinOpNode(left, op_tok, right)  # Cria uma operação binária entre os fatores
@@ -499,6 +519,12 @@ class Number:  # Armazena os números e fazer operações com eles
         if isinstance(other, Number):  # Checa se o valor é um número
             return Number(self.value ** other.value).set_context(self.context), None  # Realiza a operação
 
+    def copy(self):
+        copy = Number(self.value)
+        copy.set_pos(self.pos_start, self.pos_end)
+        copy.set_context(self.context)
+        return copy
+
     def __repr__(self):
         return str(self.value)
 
@@ -569,12 +595,13 @@ class Interpreter:
                 context
             ))
 
+        value = value.copy().set_pos(node.pos_start, node.pos_end)
         return res.success(value)
 
     def visit_VarAssignNode(self, node, context):
         res = RTResult()
         var_name = node.var_name_tok.value
-        value = res.register(self.visit(node.value_node))
+        value = res.register(self.visit(node.value_node, context))
         if res.error: return res
 
         context.symbol_table.set(var_name, value)
@@ -623,6 +650,10 @@ class Interpreter:
 # RUN
 #######################################
 
+global_symbol_table = SymbolTable()
+global_symbol_table.set("null", Number(0))  # Se digitar null é a mesma coisa que digitar 0
+
+
 def run(fn, text):
     # Gerar Tokens
     lexer = Lexer(fn, text)
@@ -637,6 +668,7 @@ def run(fn, text):
     # Rodar
     interpreter = Interpreter()
     context = Context('<program>')
+    context.symbol_table = global_symbol_table
     result = interpreter.visit(ast.node, context)
 
     return result.value, result.error
