@@ -130,7 +130,11 @@ KEYWORDS = [
     'IF',
     'THEN',
     'ELIF',
-    'ELSE'
+    'ELSE',
+    'FOR',
+    'TO',
+    'STEP',
+    'WHILE'
 ]
 
 
@@ -362,6 +366,27 @@ class IfNode:
         self.pos_end = (self.else_case or self.cases[len(self.cases) - 1][0]).pos_end
 
 
+class ForNode:
+    def __init__(self, var_name_tok, start_value_node, end_value_node, step_value_node, body_node):
+        self.var_name_tok = var_name_tok
+        self.start_value_node = start_value_node
+        self.end_value_node = end_value_node
+        self.step_value_node = step_value_node
+        self.body_node = body_node
+
+        self.pos_start = self.var_name_tok.pos_start
+        self.pos_end = self.body_node.pos_end
+
+
+class WhileNode:
+    def __init__(self, condition_node, body_node):
+        self.condition_node = condition_node
+        self.body_node = body_node
+
+        self.pos_start = self.condition_node.pos_start
+        self.pos_end = self.body_node.pos_end
+
+
 #######################################
 # PARSE RESULT
 #######################################
@@ -476,6 +501,104 @@ class Parser:  # Acompanha pelo index o Token atual
 
         return res.success(IfNode(cases, else_case))
 
+    def for_expr(self):
+        res = ParseResult()
+
+        if not self.current_tok.matches(TT_KEYWORD, 'FOR'):  # Procura pelo 'FOR' e se não encontrar, retorna erro
+            return res.failure(InvalidSyntaxError(
+                self.current_tok.pos_start, self.current_tok.pos_end,
+                f"Expected 'FOR'"
+            ))
+
+        res.register_advancement()
+        self.advance()
+
+        if self.current_tok.type != TT_IDENTIFIER:  # Procura pelo identificador e se não encontrar, retorna erro
+            return res.failure(InvalidSyntaxError(
+                self.current_tok.pos_start, self.current_tok.pos_end,
+                f"Expected identifier"
+            ))
+
+        var_name = self.current_tok  # Se encontrar o identificador é instanciado
+        res.register_advancement()
+        self.advance()
+
+        if self.current_tok.type != TT_EQ:  # Procura pela igualdade e se não encontrar, retorna erro
+            return res.failure(InvalidSyntaxError(
+                self.current_tok.pos_start, self.current_tok.pos_end,
+                f"Expected '='"
+            ))
+
+        res.register_advancement()
+        self.advance()
+
+        start_value = res.register(self.expr())  # Pega o valor inicial da expressão e o instancia
+        if res.error: return res
+
+        if not self.current_tok.matches(TT_KEYWORD, 'TO'):  # Procura pelo 'TO' e se não encontrar, retorna erro
+            return res.failure(InvalidSyntaxError(
+                self.current_tok.pos_start, self.current_tok.pos_end,
+                f"Expected 'TO'"
+            ))
+
+        res.register_advancement()
+        self.advance()
+
+        end_value = res.register(self.expr())  # Pega o valor final da expressão e o instancia
+        if res.error: return res
+
+        if self.current_tok.matches(TT_KEYWORD, 'STEP'):  # Checa se existe 'STEP'
+            res.register_advancement()
+            self.advance()
+
+            step_value = res.register(self.expr())  # Pega o valor do 'STEP' e o instancia
+            if res.error: return res
+        else:
+            step_value = None
+
+        if not self.current_tok.matches(TT_KEYWORD, 'THEN'):  # Procura pelo 'THEN' e se não encontrar, retorna erro
+            return res.failure(InvalidSyntaxError(
+                self.current_tok.pos_start, self.current_tok.pos_end,
+                f"Expected 'THEN'"
+            ))
+
+        res.register_advancement()
+        self.advance()
+
+        body = res.register(self.expr())  # Pega o corpo da expressão e o instancia
+        if res.error: return res
+
+        return res.success(ForNode(var_name, start_value, end_value, step_value, body))
+
+    def while_expr(self):
+        res = ParseResult()
+
+        if not self.current_tok.matches(TT_KEYWORD, 'WHILE'):  # Procura pelo 'WHILE' e se não encontrar, retorna erro
+            return res.failure(InvalidSyntaxError(
+                self.current_tok.pos_start, self.current_tok.pos_end,
+                f"Expected 'WHILE'"
+            ))
+
+        res.register_advancement()
+        self.advance()
+
+        condition = res.register(self.expr())  # Pega a condição e a instancia
+        if res.error: return res
+
+        if not self.current_tok.matches(TT_KEYWORD, 'THEN'):  # Procura pelo 'THEN' e se não encontrar, retorna erro
+            return res.failure(InvalidSyntaxError(
+                self.current_tok.pos_start, self.current_tok.pos_end,
+                f"Expected 'THEN'"
+            ))
+
+        res.register_advancement()
+        self.advance()
+
+        body = res.register(self.expr())  # Pega o corpo da expressão e o instancia
+        if res.error: return res
+
+        return res.success(WhileNode(condition, body))
+
     def atom(self):
         res = ParseResult()
         tok = self.current_tok  # Pega o token atual
@@ -509,6 +632,16 @@ class Parser:  # Acompanha pelo index o Token atual
             if_expr = res.register(self.if_expr())
             if res.error: return res
             return res.success(if_expr)
+
+        elif tok.matches(TT_KEYWORD, 'FOR'):
+            for_expr = res.register(self.for_expr())
+            if res.error: return res
+            return res.success(for_expr)
+
+        elif tok.matches(TT_KEYWORD, 'WHILE'):
+            while_expr = res.register(self.while_expr())
+            if res.error: return res
+            return res.success(while_expr)
 
         return res.failure(InvalidSyntaxError(
             tok.pos_start, tok.pos_end,
@@ -608,7 +741,9 @@ class Parser:  # Acompanha pelo index o Token atual
         left = res.register(func_a())  # Pega o resultado da função e retorna só o node
         if res.error: return res
 
-        while self.current_tok.type in ops or (self.current_tok.type, self.current_tok.value) in ops:  # Checa se o Token atual é uma multiplicação ou divisão
+        while self.current_tok.type in ops or (
+                self.current_tok.type,
+                self.current_tok.value) in ops:  # Checa se o Token atual é uma multiplicação ou divisão
             op_tok = self.current_tok  # Pega o Token
             res.register_advancement()
             self.advance()
@@ -887,6 +1022,52 @@ class Interpreter:
                 return res.success(else_value)
 
             return res.success(None)
+
+    def visit_ForNode(self, node, context):
+        res = RTResult()
+
+        start_value = res.register(self.visit(node.start_value_node, context))  # Passa pelo valor inicial e o instancia
+        if res.error: return res
+
+        end_value = res.register(self.visit(node.end_value_node, context))  # Passa pelo valor final e o instancia
+        if res.error: return res
+
+        if node.step_value_node:  # Verifica se 'step_value' existe e se sim, o instancia
+            step_value = res.register(self.visit(node.step_value_node, context))
+            if res.error: return res
+        else:
+            step_value = Number(1)  # Se não exister é atribuido 'Number' no valor 1
+
+        i = start_value.value
+
+        if step_value.value >= 0:
+            condition = lambda: i < end_value.value
+        else:
+            condition = lambda: i > end_value.value
+
+        while condition():
+            # Atribui o valor de i no valor do nome da variavel
+            context.symbol_table.set(node.var_name_tok.value, Number(i))
+            i += step_value.value
+
+            res.register(self.visit(node.body_node, context))
+            if res.error: return res
+
+        return res.success(None)
+
+    def visit_WhileNode(self, node, context):
+        res = RTResult()
+
+        while True:  # Loop infinito
+            condition = res.register(self.visit(node.condition_node, context))  # Instancia a condição
+            if res.error: return res
+
+            if not condition.is_true(): break  # Se a condição não for verdadeira sai do loop
+
+            res.register(self.visit(node.body_node, context))  # Instancia o corpo
+            if res.error: return res
+
+        return res.success(None)
 
 
 #######################################
